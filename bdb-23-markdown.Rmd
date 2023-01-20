@@ -1,0 +1,503 @@
+---
+title: "Big Data Bowl 2023"
+author: "Sam Burch"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Introduction
+
+The theme of this year's Big Data Bowl is about researching pass blocking and pass rushing in the NFL. Specifically, we will go through sacks on both sides of the ball. Sacks are where a quarterback is tackled behind the line of scrimmage. This can be very detrimental for the offense, even as bad as a turnover. According to the Washington Post, a sack (on average) can be worth about 1.75 point to the defense. So, we seek to find out what affects sacks and which players are best at limiting these on offense and maximizing these on defense. (Note: It has been proven that quarterbacks largely are responsible for sacks. Per the Big Lead, a QBs Sack Rate is very stable when changing teams. However, because of the impact of a sack and other positions being liable as well, this will still be our base measure of play.)
+
+We will be using the data provided for this competition. Here, we import such data (on top of the libraries we will be using).
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+
+
+games = read.csv('games.csv', header = TRUE)
+pff = read.csv('pffScoutingData.csv', header = TRUE)
+players = read.csv('players.csv', header = TRUE)
+plays = read.csv('plays.csv', header=TRUE)
+
+games = as_tibble(games)
+pff = as_tibble(pff)
+players = as_tibble(players)
+plays = as_tibble(plays)
+```
+
+
+
+
+### Offense
+
+
+## Total Sacks and Pressures Allowed
+
+Let us consider the total sacks allowed by position.
+
+```{r}
+pff |> 
+  filter(pff_role == 'Pass Block', pff_sackAllowed == 1) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(sacks = n()) |> 
+  arrange(-sacks)
+```
+
+The offensive line players -- tackles, guards, and centers -- have by far the highest number of sacks allowed. This is likely due to the high number of pass blocking snaps they have compared to other positions. So, we need to find a way to combat this issue. Before we do so, let us look at another statistic.
+
+Pressures (defined as a hit, hurry, or sack on the quarterback) have been proven to be more stable than sacks and are even quite predictive of future sacks (per PFF). So, let us consider the total pressures allowed by position -- min 10 pressures.
+
+```{r}
+pff |> 
+  filter(pff_role == 'Pass Block', 
+         pff_hurryAllowed == 1 | 
+         pff_sackAllowed == 1  |
+         pff_hitAllowed == 1) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(pressures = n()) |> 
+  arrange(-pressures) |> 
+  filter(pressures > 10)
+```
+
+With pressures allowed, we run into the same issue. This is because total sacks and pressures allowed are volume statistics. Just like passing yards, the more pass attempts you have, the more passing yards you tend to have. Thus, there exists passing yards per attempt. We will do the same here by creating rate statistics.
+
+
+
+## Offensive Sack and Pressure Rates
+
+To make an offensive sack rate, we will group by position and divide sacks allowed by the number of pass blocking reps. This is what we end up with.
+
+```{r}
+sack_rate_plus = pff |> 
+  filter(pff_role == 'Pass Block') |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(sack_rate = mean(pff_sackAllowed), sacks = sum(pff_sackAllowed), plays = n()) |>
+  arrange(-sack_rate) |> 
+  filter(sack_rate > 0)
+sack_rate_plus
+```
+
+Here is a visual of what the table says about offensive sack rate. Note: Keep in mind the sample size per position.
+
+```{r}
+ggplot(sack_rate_plus, aes(reorder(pff_positionLinedUp, sack_rate), sack_rate)) +
+  geom_col(aes(color = pff_positionLinedUp, fill = pff_positionLinedUp)) +
+  # theme(axis.text.x = element_blank()) +
+  labs(
+    title = 'Offensive Sack Rate by Position Lined Up',
+    subtitle = 'Positive Offensive Sack Rate',
+    caption = 'By: Sam Burch',
+    y = 'Offensive Sack Rate',
+    x = 'Position'
+  )
+```
+
+Unlike total sacks allowed, non o-lineman have the higher number here. There are a few possible reasons for this; these positions not being as good of blockers, or even them being the last line of defense for the quarterback. Also, we must take into account that with an increase in volume, it is harder to obtain a high efficiency. However, since having a lower rate here is better, this "helps" the o-lineman.
+
+
+Let us compare our rate and volume metric now.
+
+```{r}
+ggplot(sack_rate_plus, aes(sack_rate, sacks)) +
+  geom_point() +
+  geom_text_repel(aes(label = pff_positionLinedUp), size = 3) +
+  labs(
+    title = 'Comparison of Sacks Allowed Against Offensive Sack Rate',
+    subtitle = 'Positive Offensive Sack Rate',
+    caption = 'By: Sam Burch',
+    y = 'Sacks Allowed',
+    x = 'Offensive Sack Rate'
+  )
+```
+
+The first observation from this chart are the two clusters -- o-lineman (cluster 1) and non o-lineman (cluster 2). With cluster 1, it is easy to see the higher sacks allowed and lower offensive sack rate. One observation we didn't realize earlier was the positive correlation. This shows how interior o-lineman generate a lower amount of sacks allowed and a lower offensive sack rate compared to the tackles. This makes sense as pass rushing is generally easier to win on the outside. On top of that, we can see players on the right are generally worse than on the left. This might be because teams still prioritize protecting the blindside of the quarterback.
+
+Cluster 2 shows a lack of correlation. Not much can be taken away from this, but maybe as players at other positions give up more sacks, coach's will make sure these players do not keep receiving more snaps. That's why the players with a lower sack rate here have given up a similar amount of sacks as those with a higher sack rate.
+
+
+Now we add in offensive pressure rate.
+
+```{r}
+pressure_rate_plus = pff |> 
+  filter(pff_role == 'Pass Block') |> 
+  mutate(pressureAllowed = case_when((pff_hurryAllowed == 1 | 
+                                     pff_sackAllowed == 1  |
+                                     pff_hitAllowed == 1) ~ 1,
+                                     (pff_hurryAllowed == 0 &
+                                     pff_sackAllowed == 0  &
+                                     pff_hitAllowed == 0) ~ 0)) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(pressure_rate = mean(pressureAllowed), pressures = sum(pressureAllowed), plays = n()) |>
+  arrange(-pressure_rate) |> 
+  filter(pressure_rate > 0,
+         plays >= 50)
+pressure_rate_plus
+
+
+ggplot(pressure_rate_plus, aes(reorder(pff_positionLinedUp, pressure_rate), pressure_rate)) +
+  geom_col(aes(color = pff_positionLinedUp, fill = pff_positionLinedUp)) +
+  # theme(axis.text.x = element_blank()) +
+  labs(
+    title = 'Offensive Pressure Rate by Position Lined Up',
+    subtitle = 'Min. 50 Pass Blocking snaps | Positive Offensive Pressure Rate',
+    caption = 'By: Sam Burch',
+    y = 'Offensive Pressure Rate',
+    x = 'Position'
+  )
+```
+
+Besides tight ends showing up slightly better here, this is similar to what we saw with offensive sack rate. Also, keep in mind we added in a play minimum above to eliminate some noise.
+
+
+Another comparison of metrics.
+
+```{r}
+ggplot(pressure_rate_plus, aes(pressure_rate, pressures)) +
+  geom_point() +
+  geom_text_repel(aes(label = pff_positionLinedUp), size = 3) +
+  labs(
+    title = 'Comparison of Pressures Allowed Against Pressure Rate',
+    subtitle = 'Min. 50 Pass Blocking snaps | Positive Offensive Pressure Rate',
+    caption = 'By: Sam Burch',
+    y = 'Pressures Allowed',
+    x = 'Offensive Pressure Rate'
+  )
+```
+
+The two clusters appear again. The main difference again is the TE performance. This may be because of o-line players lining up as TEs a variety of times in max protection scenarios. Another reason could simply be TEs blocking weak rushers as opposed to tackles blocking edge defenders.
+
+
+
+## Offensive Sack Rate vs Offensive Pressure Rate
+
+We already know that pressures are a very good measure of future sack performance. So, let us compare the rates of both.
+
+```{r}
+sr_pr = pff |> 
+  filter(pff_role == 'Pass Block') |> 
+  mutate(pressureAllowed = case_when((pff_hurryAllowed == 1 | 
+                                        pff_sackAllowed == 1  |
+                                        pff_hitAllowed == 1) ~ 1,
+                                     (pff_hurryAllowed == 0 &
+                                        pff_sackAllowed == 0  &
+                                        pff_hitAllowed == 0) ~ 0)) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(pressure_rate = mean(pressureAllowed), pressures = sum(pressureAllowed),
+            sack_rate = mean(pff_sackAllowed), sacks = sum(pff_sackAllowed), plays = n()) |>
+  arrange(-pressure_rate) |> 
+  filter(pressure_rate > 0,
+         plays >= 50)
+sr_pr
+
+ggplot(sr_pr, aes(sack_rate, pressure_rate)) +
+  labs(
+    title = 'Offensive Sack Rate vs Offensive Pressure Rate',
+    subtitle = 'A look into stability | Min. 50 Pass Blocking snaps | Positive Offensive Pressure Rate',
+    caption = 'By: Sam Burch',
+    x = 'Offensive Sack Rate',
+    y = 'Offensive Pressure Rate'
+  ) +
+  geom_point(aes(size = plays)) +
+  geom_text_repel(aes(label = pff_positionLinedUp), size = 3) +
+  stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray')
+```
+
+Right away, we can see how the regression line isn't a very good fit. This is due to the several reasons. One, there are small samples at different positions. Another reason, is the position tackles are put in versus interior o-lineman. Although this is the case, within the o-lineman, it is clear there is a strong positive correlation between the two metrics. 
+
+
+
+## O-line Performance by Players
+
+We will now look at the pass blocking performance across all o-lineman. Specifically, o-lineman with more than 100 pass blocking snaps and with a positive (non-zero) sack and pressure rate.
+
+```{r}
+high_vol = pff |> 
+  filter(pff_role == 'Pass Block', pff_positionLinedUp == 'C'  |
+                                   pff_positionLinedUp == 'LG' |
+                                   pff_positionLinedUp == 'RG' |
+                                   pff_positionLinedUp == 'LT' |
+                                   pff_positionLinedUp == 'RT') |> 
+  mutate(pressureAllowed = case_when((pff_hurryAllowed == 1 | 
+                                        pff_sackAllowed == 1  |
+                                        pff_hitAllowed == 1) ~ 1,
+                                     (pff_hurryAllowed == 0 &
+                                        pff_sackAllowed == 0  &
+                                        pff_hitAllowed == 0) ~ 0)) |> 
+  group_by(nflId, pff_positionLinedUp) |> 
+  summarise(pressure_rate = mean(pressureAllowed), pressures = sum(pressureAllowed),
+            sack_rate = mean(pff_sackAllowed), sacks = sum(pff_sackAllowed), plays = n(), .groups = 'drop') |>
+  arrange(-pressure_rate) |> 
+  filter(plays >= 100)
+
+high_vol = high_vol |> 
+  left_join(players, by = 'nflId') |> 
+  select(displayName, everything()) |> 
+  arrange(-pressure_rate)
+
+high_vol
+```
+
+
+How does volume affect sack rate?
+
+```{r}
+ggplot(high_vol, aes(plays, sack_rate)) +
+  geom_point() + 
+  labs(
+    title = 'How Volume Affects Sack Rate',
+    caption = 'By: Sam Burch',
+    y = 'Offensive Sack Rate',
+    x = 'Number of Pass Blocking Snaps (min 100)'
+  )
+```
+
+
+This chart does illustrate the fact that the more snaps, the lower the rate is. What is interesting here though is the different line segments. One possible scenario is this is due to the different positions; this is wrong though as one can see from the chart below.
+
+```{r}
+ggplot(high_vol, aes(plays, sack_rate)) +
+  geom_point(aes(color = pff_positionLinedUp)) + 
+  labs(
+    title = 'How Volume Affects Sack Rate',
+    subtitle = 'Adding in Positions',
+    caption = 'By: Sam Burch',
+    y = 'Offensive Sack Rate',
+    x = 'Number of Pass Blocking Snaps (min 100)'
+  )
+```
+
+The only other cause I could think of was potentially quality of play. However, this is likely wrong as good players would very likely not be this separated. So, we must note there may be some conflicting variable and move onto how volume affects offensive pressure rate.
+
+```{r}
+ggplot(high_vol, aes(plays, pressure_rate)) +
+  geom_point() + 
+  labs(
+    title = 'How Volume Affects Pressure Rate',
+    caption = 'By: Sam Burch',
+    y = 'Offensive Pressure Rate',
+    x = 'Number of Pass Blocking Snaps (min 100)'
+  ) +
+  stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray')
+```
+
+The negative correlation is still prevalent in this chart. However, the trends are not nearly as clear, and seem more random at first glance. Perhaps with pressures occurring more often than sacks, this is the reason for the more random appearance. Either way, this helps affirm that rates decrease as volume increases.
+
+
+We can now look at the comparison between the rates to see the best pass-blocking players from this time frame. (Because of the number of players, several names may be cutoff.)
+
+```{r}
+high_vol = high_vol |> 
+  filter(sack_rate > 0)
+
+ggplot(high_vol, aes(sack_rate, pressure_rate)) +
+  labs(
+    title = 'The Best Pass Blockers',
+    subtitle = 'Min 100 Pass Blocking snaps | Min 1 Sack Allowed',
+    caption = 'By: Sam Burch',
+    x = 'Offensive Sack Rate',
+    y = 'Offensive Pressure Rate'
+  ) +
+  geom_point(aes(shape = pff_positionLinedUp, color = pff_positionLinedUp)) +
+  geom_text_repel(aes(label = displayName), size = 2) +
+  stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray')
+```
+
+This graph tells us the most useful information so far. By looking at this comparison, we can use the regression line to see who has over performed and under performed. A player above the regression line -- like Alejandro Villanueva -- has under performed. Since pressure rate is predictive of sack rate, the higher pressure rate relative to sack rate suggests the sack rate in the future will be higher than it is now. On the other hand, a player below the regression line -- like Garrett Bolles -- has over performed. Thus, he will likely regress towards a lower sack rate.
+
+Also, o-line players towards the bottom-left have been better pass blockers than those in the upper-right. Therefore, someone like Dion Dawkins is having a much better season than Alex Leatherwood. Although this is the case, there are still a couple notes to be aware of. There is still a bias towards interior o-line, as they generally are at the bottom-left; this bias was discussed earlier. On top of that, the number of pass block reps is not displayed here. While everyone has a high amount (above 100) there is still some disparity here, so just be careful.
+
+
+
+
+### Defense
+
+## Total Sacks and Pressures Forced
+
+Transitioning to the defense side, we will go through a similar process. To start off, we will look at the accumulation of sacks and pressures by defenders.
+
+```{r}
+pff |> 
+  filter(pff_role == 'Pass Rush', pff_sack == 1) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(sacks = n()) |> 
+  arrange(-sacks)
+
+pff |> 
+  filter(pff_role == 'Pass Rush', 
+         pff_hit == 1 |
+         pff_hurry == 1 |
+         pff_sack == 1) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(pressures = n()) |> 
+  arrange(-pressures)
+```
+
+There are a lot more positions being considered on the defensive side -- since everyone can rush the passer. With that being said, we see a similarity to the offensive side of the ball; lineman are higher than other positions in these metrics. We can even see how edge rushers have higher numbers than interior d-lineman. These make sense, because of similarity, so we can move on.
+
+
+
+## Defensive Sack and Pressure Rates
+
+Let us add in defensive sack and pressure rates. 
+
+```{r}
+def_rates = pff |> 
+  filter(pff_role == 'Pass Rush') |> 
+  mutate(pressure = case_when((pff_hurry == 1 | 
+                               pff_sack == 1  |
+                               pff_hit == 1) ~ 1,
+                              (pff_hurry == 0 &
+                               pff_sack == 0  &
+                               pff_hit == 0) ~ 0)) |> 
+  group_by(pff_positionLinedUp) |> 
+  summarise(pressure_rate = mean(pressure), pressures = sum(pressure), 
+            sack_rate = mean(pff_sack), sacks = sum(pff_sack), plays = n()) |>
+  arrange(-pressure_rate) |> 
+  filter(plays >= 50)
+def_rates
+
+
+ggplot(def_rates, aes(reorder(pff_positionLinedUp, sack_rate), sack_rate)) +
+  geom_col(aes(color = pff_positionLinedUp, fill = pff_positionLinedUp)) +
+  # theme(axis.text.x = element_blank()) +
+  labs(
+    title = 'Defensive Sack Rate by Position Lined Up',
+    subtitle = 'Min 50 Pass Rushing snaps',
+    caption = 'By: Sam Burch',
+    y = 'Defensive Sack Rate',
+    x = 'Position'
+  )
+
+
+ggplot(def_rates, aes(sack_rate, sacks)) +
+  geom_point() +
+  geom_text_repel(aes(label = pff_positionLinedUp), size = 3) +
+  labs(
+    title = 'Comparison of Sacks Against Defensive Sack Rate',
+    subtitle = 'Min 50 Pass Rushing snaps',
+    caption = 'By: Sam Burch',
+    y = 'Sacks',
+    x = 'Defensive Sack Rate'
+  )
+```
+
+We start to see the trend of as volume increases, the rates decrease; the notable exception are nose tackles. Nose tackles jobs are rarely to straight up rush the passer. So, it makes sense that they have low sack rates, even though they have a relatively high amount of "pass rushing" snaps.
+
+Another takeaway is the high sack rates for linebackers. While (once again) we must be aware of the smaller sample size, linebackers show up well here. A possible reason is when linebackers rush the QB, it might be a blitz more often than not. So, if d-lineman eat up most of the blocks, this gives linebackers the chance to capitalize and get to the QB.
+
+The second graph above gives similar takeaways to earlier. Note that players on the left of the d-line have slightly better success, which again may be due to the blindside effect. 
+
+
+Onto illustrating defensive pressure rate.
+
+```{r}
+ggplot(def_rates, aes(reorder(pff_positionLinedUp, pressure_rate), pressure_rate)) +
+  geom_col(aes(color = pff_positionLinedUp, fill = pff_positionLinedUp)) +
+  # theme(axis.text.x = element_blank()) +
+  labs(
+    title = 'Defensive Pressure Rate by Position Lined Up',
+    subtitle = 'Min 50 Pass Rushing snaps',
+    caption = 'By: Sam Burch',
+    y = 'Defensive Pressure Rate',
+    x = 'Position'
+  )
+
+
+ggplot(def_rates, aes(pressure_rate, pressures)) +
+  geom_point() +
+  geom_text_repel(aes(label = pff_positionLinedUp), size = 3) +
+  labs(
+    title = 'Comparison of Pressures Against Defensive Pressure Rate',
+    subtitle = 'Min 50 Pass Rushing snaps',
+    caption = 'By: Sam Burch',
+    y = 'Pressures',
+    x = 'Defensive Pressure Rate'
+  )
+```
+
+
+Because of the similarity to defensive sack rate, the analysis above is suffice here as well.
+
+
+
+## Defensive Sack Rate vs Defensive Pressure Rate
+
+```{r}
+def_high = def_rates |> 
+  filter(plays >= 100)
+def_high
+
+ggplot(def_high, aes(sack_rate, pressure_rate)) +
+  geom_point() +
+  geom_text_repel(aes(label = pff_positionLinedUp), size = 2) +
+  labs(
+    title = 'Defensive Sack Rate vs Defensive Pressure Rate',
+    subtitle = 'Min 100 Pass Rushing snaps',
+    caption = 'By: Sam Burch',
+    x = 'Defensive Sack Rate',
+    y = 'Defensive Pressure Rate'
+  ) +
+  stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray')
+```
+
+This graphs illustrates that d-lineman have been lucky, but that's not the case. Again, there are biases with small sample sizes among the other positions that affect the regression line. Just looking at d-lineman, the strong positive correlation makes sense. Thus, we will focus on these positions going forwards, as the other positions just add in too much noise.
+
+
+
+## D-line Performance by Players
+
+```{r}
+def_vol = pff |> 
+  filter(pff_role == 'Pass Rush') |> 
+  mutate(pressure = case_when((pff_hurry == 1 | 
+                                 pff_sack == 1  |
+                                 pff_hit == 1) ~ 1,
+                              (pff_hurry == 0 &
+                                 pff_sack == 0  &
+                                 pff_hit == 0) ~ 0)) |> 
+  group_by(nflId) |>
+  summarise(pressure_rate = mean(pressure), pressures = sum(pressure), 
+            sack_rate = mean(pff_sack), sacks = sum(pff_sack), plays = n()) |>
+  arrange(-pressure_rate) |> 
+  filter(plays >= 100, sack_rate > 0) |> 
+  left_join(players, by = 'nflId') |> 
+  select(displayName, everything())
+def_vol
+
+ggplot(def_vol, aes(sack_rate, pressure_rate)) +
+  geom_point(aes(color = officialPosition)) +
+  geom_text_repel(aes(label = displayName), size = 2) +
+  stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray') +
+  labs(
+    title = 'The Best Pass Rushers',
+    subtitle = 'Min 100 Pass Rushing snaps',
+    caption = 'By: Sam Burch',
+    x = 'Defensive Sack Rate',
+    y = 'Defensive Pressure Rate'
+  )
+```
+
+We are left with our final chart. This discusses the best pass rushers. As I explained how one can read the best pass blockers chart, this is very similar. The only difference is it is flipped in terms of quality players. This is because higher sack rates and pressure rates are good for the defensive players.
+
+Hence, players like Melvin Ingram and Rashan Gary have gotten unlucky. On the other hand, players like Hasson Reddick and T.J. Watt have gotten lucky. Meanwhile, Myles Garrett has been utterly dominant and Jerry Tillery not so much. 
+
+Lastly, we will take note of the interior d-lineman showing up worse than the edge defenders. This, again, is because edge defenders are better set up to rush the passer.
+
+
+
+## Conclusion
+
+By looking at the data, we found a way to measure how good pass blockers are and how good pass rushers are. Combining pressure rate and sack rate doesn't give the perfect answer to who these best players are, but it gives us a good idea. If someone just looks at the top sacks by position, there can be so much noise where it won't tell you much. The goal is to find a good approximation with little noise. Then, one can adjust based off of other factors, if needed. We have accomplished that here because these rates help eliminate noise and show a good approximation of the impact these players have had on improving their team's chances of winning.
+
+I would like to thank you for your consideration. Analytics have helped turn complex problems in football into seemingly simple answers. Because of this, football workers, players, and fans has gotten continually smarter over the years. I hope this helps contribute to that in one way or another!
+
+
+## References
+ - [The Washington Post] (https://www.washingtonpost.com/news/fancy-stats/wp/2017/08/01/the-value-of-a-sack-and-why-pass-rusher-is-the-nfls-second-most-important-position/)
+ 
+ - [The Big Lead] (https://www.thebiglead.com/posts/sacks-are-a-quarterback-stat-01dxqapkgvw9)
+ 
+ - [PFF] (https://www.pff.com/news/pro-the-importance-of-pressure-its-not-all-about-sacks)
